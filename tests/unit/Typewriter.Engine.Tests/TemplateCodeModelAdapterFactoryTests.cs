@@ -1025,6 +1025,75 @@ public sealed class TemplateCodeModelAdapterFactoryTests
         externalNested.Type.IsDefined.Should().BeFalse();
     }
 
+    [Fact]
+    public void MemberAdaptationPreservesSeparateShallowParentsAndTypeShells()
+    {
+        var argumentType = CreateReference(name: "String", fullName: "System.String");
+        var property = new PropertyMetadata(
+            Name: "Value",
+            FullName: "Sample.Factory.Value",
+            Type: argumentType,
+            Accessibility: MetadataAccessibility.Public,
+            HasGetter: true,
+            HasSetter: true,
+            IsRequired: false,
+            Attributes: [])
+        {
+            ParentTypeFullName = "Sample.Factory",
+        };
+        var declaration = CreateType(kind: TypeMetadataKind.Class, arity: 1) with
+        {
+            Properties = [property],
+            TypeArguments = [argumentType],
+            Attributes =
+            [
+                new AttributeMetadata(
+                    Name: "Example",
+                    FullName: "Sample.ExampleAttribute",
+                    Arguments:
+                    [
+                        new AttributeArgumentMetadata(Name: "Value", Value: "sample")
+                        {
+                            Type = argumentType,
+                            TypeValue = argumentType,
+                        },
+                    ])
+                {
+                    Type = CreateReference(name: "ExampleAttribute", fullName: "Sample.ExampleAttribute"),
+                },
+            ],
+        };
+        var metadata = new ProjectMetadata(ProjectPath: "Sample.csproj", SourceFiles: [], Types: [declaration], Diagnostics: []);
+        var factory = new TemplateCodeModelAdapterFactory(metadata: metadata, templatePath: "models.tst");
+
+        factory.TryAdapt(context: property, targetType: typeof(Typewriter.CodeModel.Property), adapted: out var first).Should().BeTrue();
+        factory.TryAdapt(context: property, targetType: typeof(Typewriter.CodeModel.Property), adapted: out var second).Should().BeTrue();
+
+        var parent = first.Should().BeOfType<Typewriter.CodeModel.Property>().Which.Parent.Should().BeOfType<Typewriter.CodeModel.Class>().Which;
+        var otherParent = second.Should().BeOfType<Typewriter.CodeModel.Property>().Which.Parent.Should().BeOfType<Typewriter.CodeModel.Class>().Which;
+        parent.Should().NotBeSameAs(otherParent);
+        parent.Type.Should().NotBeSameAs(otherParent.Type);
+        parent.Attributes.Should().BeSameAs(parent.Attributes).And.NotBeSameAs(otherParent.Attributes).And.NotBeSameAs(parent.Type.Attributes);
+        parent.Attributes[0].Should().NotBeSameAs(parent.Type.Attributes[0]);
+        parent.Attributes[0].Type.Should().NotBeSameAs(parent.Type.Attributes[0].Type);
+        parent.Attributes[0].Arguments[0].Type.Should().NotBeSameAs(parent.Type.Attributes[0].Arguments[0].Type);
+        parent.Attributes[0].Arguments[0].TypeValue.Should().NotBeSameAs(parent.Type.Attributes[0].Arguments[0].TypeValue);
+        parent.TypeArguments.Should().NotBeSameAs(parent.Type.TypeArguments).And.NotBeSameAs(otherParent.TypeArguments);
+        parent.TypeArguments[0].Should().NotBeSameAs(parent.Type.TypeArguments[0]);
+        parent.TypeArguments[0].FullName.Should().Be(argumentType.FullName);
+        parent.Type.TypeArguments[0].FullName.Should().Be(argumentType.FullName);
+        parent.TypeParameters.Should().NotBeSameAs(parent.Type.TypeParameters);
+        parent.TypeParameters[0].Should().NotBeSameAs(parent.Type.TypeParameters[0]);
+        parent.TypeParameters[0].Name.Should().Be("T0");
+        parent.Type.TypeParameters[0].Name.Should().Be("T0");
+        parent.Parent.Should().BeNull();
+        parent.Attributes[0].Parent.Should().BeNull();
+        parent.Type.Attributes[0].Parent.Should().BeNull();
+        parent.Properties.Should().BeEmpty();
+        parent.Type.Properties.Should().BeEmpty();
+        parent.Type.Should().BeSameAs(parent.Type);
+    }
+
     private static ProjectMetadata CreateMetadata(
         TypeMetadataKind kind,
         int derivedArity,
