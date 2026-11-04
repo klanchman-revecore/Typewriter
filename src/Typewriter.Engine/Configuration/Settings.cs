@@ -302,6 +302,9 @@ public class Settings
         }
     }
 
+    // Mapping inputs are scalar values and immutable strings; copied mutable members are not used for mapping.
+    internal Settings CaptureMappingSettings() => (Settings)MemberwiseClone();
+
     internal TypeScriptDateMapping GetDateMapping() =>
         new(
             Library: DateLibraryGeneration,

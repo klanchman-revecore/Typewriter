@@ -7,6 +7,9 @@ namespace Typewriter.CodeModel;
 /// </summary>
 public class Attribute : Item
 {
+    private Type? _type;
+    private Lazy<Type?>? _deferredType;
+
     /// <summary>
     /// Gets the constructor and named arguments of the attribute.
     /// Template shorthand: <c>$Arguments[...]</c>.
@@ -16,7 +19,19 @@ public class Attribute : Item
     /// <summary>
     /// Gets the type of the attribute class.
     /// </summary>
-    public virtual Type? Type { get; init; }
+    public virtual Type? Type
+    {
+        get
+        {
+            return _deferredType is { } deferred ? deferred.Value : _type;
+        }
+
+        init
+        {
+            _type = value;
+            _deferredType = null;
+        }
+    }
 
     /// <summary>
     /// Gets the raw argument list of the attribute as written in source, for example
@@ -29,4 +44,6 @@ public class Attribute : Item
     /// Converts the attribute to its name so it can be used directly in string contexts.
     /// </summary>
     public static implicit operator string(Attribute? instance) => instance?.ToString() ?? string.Empty;
+
+    internal void SetTypeFactory(Func<Type?> factory) => _deferredType = new Lazy<Type?>(valueFactory: factory);
 }
