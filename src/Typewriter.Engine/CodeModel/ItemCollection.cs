@@ -14,7 +14,7 @@ public class ItemCollection<T> : IItemCollection<T>
 
     public ItemCollection(IEnumerable<T> items)
     {
-        _items = items.ToArray();
+        _items = items is DeferredItemList<T> deferred ? deferred : items.ToArray();
     }
 
     public int Count => _items.Count;

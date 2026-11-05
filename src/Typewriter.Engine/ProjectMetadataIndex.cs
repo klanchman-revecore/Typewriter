@@ -34,6 +34,8 @@ internal sealed class ProjectMetadataIndex
 
     public IReadOnlyDictionary<string, PropertyMetadata> PropertiesByFullName { get; }
 
+    public TypeScriptTypeMapper TypeMapper { get; } = new();
+
     public static ProjectMetadataIndex Create(ProjectMetadata metadata)
     {
         ArgumentNullException.ThrowIfNull(argument: metadata);

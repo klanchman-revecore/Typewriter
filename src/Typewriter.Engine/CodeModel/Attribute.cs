@@ -9,6 +9,8 @@ public class Attribute : Item
 {
     private Type? _type;
     private Lazy<Type?>? _deferredType;
+    private string _value = string.Empty;
+    private Lazy<string>? _deferredValue;
 
     /// <summary>
     /// Gets the constructor and named arguments of the attribute.
@@ -38,7 +40,19 @@ public class Attribute : Item
     /// <c>"users", Order = 1</c> for <c>[Route("users", Order = 1)]</c>.
     /// Template shorthand: <c>$Value</c>.
     /// </summary>
-    public virtual string Value { get; init; } = string.Empty;
+    public virtual string Value
+    {
+        get
+        {
+            return _deferredValue is { } deferred ? deferred.Value : _value;
+        }
+
+        init
+        {
+            _value = value;
+            _deferredValue = null;
+        }
+    }
 
     /// <summary>
     /// Converts the attribute to its name so it can be used directly in string contexts.
@@ -46,4 +60,6 @@ public class Attribute : Item
     public static implicit operator string(Attribute? instance) => instance?.ToString() ?? string.Empty;
 
     internal void SetTypeFactory(Func<Type?> factory) => _deferredType = new Lazy<Type?>(valueFactory: factory);
+
+    internal void SetValueFactory(Func<string> factory) => _deferredValue = new Lazy<string>(valueFactory: factory);
 }

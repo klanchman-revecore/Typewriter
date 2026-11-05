@@ -59,10 +59,10 @@ internal sealed class TemplateCodeModelAdapterFactory
     {
         _settings = settings;
         _mappingSettings = settings;
-        _typeMapper = new TypeScriptTypeMapper();
         _assemblyName = Path.GetFileNameWithoutExtension(path: metadata.ProjectPath);
         var index = metadataIndex ?? ProjectMetadataIndex.Create(metadata: metadata);
         _metadataIndex = index;
+        _typeMapper = index.TypeMapper;
         _typesByFullName = index.TypesByFullName;
         _methodsByFullName = index.MethodsByFullName;
         _propertiesByFullName = index.PropertiesByFullName;
@@ -383,27 +383,29 @@ internal sealed class TemplateCodeModelAdapterFactory
             FullName = filePath,
             Path = filePath,
             Classes = new Typewriter.CodeModel.ClassCollection(
-                items: rootTypes
-                    .Where(predicate: type => type.Kind == TypeMetadataKind.Class)
-                    .Select(selector: CreateClass)),
+                items: CreateItems(
+                    source: rootTypes.Where(predicate: type => type.Kind == TypeMetadataKind.Class),
+                    selector: static (factory, type) => factory.CreateClass(type: type))),
             Records = new Typewriter.CodeModel.RecordCollection(
-                items: rootTypes
-                    .Where(predicate: type => type.Kind == TypeMetadataKind.Record)
-                    .Select(selector: CreateRecord)),
+                items: CreateItems(
+                    source: rootTypes.Where(predicate: type => type.Kind == TypeMetadataKind.Record),
+                    selector: static (factory, type) => factory.CreateRecord(type: type))),
             Structs = new Typewriter.CodeModel.StructCollection(
-                items: rootTypes
-                    .Where(predicate: type => type.Kind == TypeMetadataKind.Struct)
-                    .Select(selector: CreateStruct)),
-            Delegates = new Typewriter.CodeModel.DelegateCollection(items: project.Delegates.Select(selector: @delegate => CreateDelegate(@delegate: @delegate, parent: null))),
+                items: CreateItems(
+                    source: rootTypes.Where(predicate: type => type.Kind == TypeMetadataKind.Struct),
+                    selector: static (factory, type) => factory.CreateStruct(type: type))),
+            Delegates = new Typewriter.CodeModel.DelegateCollection(
+                items: CreateItems(source: project.Delegates, selector: static (factory, @delegate) => factory.CreateDelegate(@delegate: @delegate, parent: null))),
             Interfaces = new Typewriter.CodeModel.InterfaceCollection(
-                items: rootTypes
-                    .Where(predicate: type => type.Kind == TypeMetadataKind.Interface)
-                    .Select(selector: CreateInterface)),
+                items: CreateItems(
+                    source: rootTypes.Where(predicate: type => type.Kind == TypeMetadataKind.Interface),
+                    selector: static (factory, type) => factory.CreateInterface(type: type))),
             Enums = new Typewriter.CodeModel.EnumCollection(
-                items: rootTypes
-                    .Where(predicate: type => type.Kind == TypeMetadataKind.Enum)
-                    .Select(selector: CreateEnum)),
-            Types = new Typewriter.CodeModel.TypeCollection(items: rootTypes.Select(selector: CreateType)),
+                items: CreateItems(
+                    source: rootTypes.Where(predicate: type => type.Kind == TypeMetadataKind.Enum),
+                    selector: static (factory, type) => factory.CreateEnum(type: type))),
+            Types = new Typewriter.CodeModel.TypeCollection(
+                items: CreateItems(source: rootTypes, selector: static (factory, type) => factory.CreateType(type: type))),
         };
     }
 
@@ -895,10 +897,11 @@ internal sealed class TemplateCodeModelAdapterFactory
             Name = attribute.Name,
             FullName = attribute.FullName,
             Parent = parent,
-            Arguments = new Typewriter.CodeModel.AttributeArgumentCollection(items: attribute.Arguments.Select(selector: (typeFactory ?? this).CreateAttributeArgument)),
+            Arguments = new Typewriter.CodeModel.AttributeArgumentCollection(
+                items: (typeFactory ?? this).CreateItems(source: attribute.Arguments, selector: static (factory, argument) => factory.CreateAttributeArgument(argument: argument))),
             Type = attribute.Type is null || typeFactory is not null ? null : CreateType(type: attribute.Type),
-            Value = TemplateAttributeValueFormatter.Format(attribute: attribute),
         };
+        result.SetValueFactory(factory: () => TemplateAttributeValueFormatter.Format(attribute: attribute));
 
         if (typeFactory is not null && attribute.Type is { } reference)
         {
@@ -948,22 +951,28 @@ internal sealed class TemplateCodeModelAdapterFactory
         IEnumerable<AttributeMetadata> attributes)
     {
         return new Typewriter.CodeModel.AttributeCollection(
-            items: attributes.Select(
-                selector: attribute => new CodeAttribute
-                {
-                    AssemblyName = ResolveAssemblyName(assemblyName: attribute.AssemblyName),
-                    Name = attribute.Name,
-                    FullName = attribute.FullName,
-                    Arguments = new Typewriter.CodeModel.AttributeArgumentCollection(
-                        items: attribute.Arguments.Select(
-                            selector: argument => new Typewriter.CodeModel.AttributeArgument
-                            {
-                                AssemblyName = ResolveAssemblyName(assemblyName: argument.AssemblyName),
-                                Name = argument.Name ?? string.Empty,
-                                Value = TemplateAttributeArgumentValueResolver.Resolve(argument: argument),
-                            })),
-                    Value = TemplateAttributeValueFormatter.Format(attribute: attribute),
-                }));
+            items: CreateItems(source: attributes, selector: static (factory, attribute) => factory.CreateTypeReferenceAttribute(attribute: attribute)));
+    }
+
+    private CodeAttribute CreateTypeReferenceAttribute(AttributeMetadata attribute)
+    {
+        var result = new CodeAttribute
+        {
+            AssemblyName = ResolveAssemblyName(assemblyName: attribute.AssemblyName),
+            Name = attribute.Name,
+            FullName = attribute.FullName,
+            Arguments = new Typewriter.CodeModel.AttributeArgumentCollection(
+                items: CreateItems(
+                    source: attribute.Arguments,
+                    selector: static (factory, argument) => new Typewriter.CodeModel.AttributeArgument
+                    {
+                        AssemblyName = factory.ResolveAssemblyName(assemblyName: argument.AssemblyName),
+                        Name = argument.Name ?? string.Empty,
+                        Value = TemplateAttributeArgumentValueResolver.Resolve(argument: argument),
+                    })),
+        };
+        result.SetValueFactory(factory: () => TemplateAttributeValueFormatter.Format(attribute: attribute));
+        return result;
     }
 
     private Typewriter.CodeModel.EnumValue CreateEnumValue(
@@ -1036,7 +1045,27 @@ internal sealed class TemplateCodeModelAdapterFactory
         IEnumerable<AttributeMetadata> attributes,
         Typewriter.CodeModel.Item? parent)
     {
-        return new Typewriter.CodeModel.AttributeCollection(items: attributes.Select(selector: attribute => CreateAttribute(attribute: attribute, parent: parent)));
+        return new Typewriter.CodeModel.AttributeCollection(
+            items: CreateItems(source: attributes, selector: (factory, attribute) => factory.CreateAttribute(attribute: attribute, parent: parent)));
+    }
+
+    private IEnumerable<TItem> CreateItems<TSource, TItem>(
+        IEnumerable<TSource> source,
+        Func<TemplateCodeModelAdapterFactory, TSource, TItem> selector)
+        where TItem : Typewriter.CodeModel.Item
+    {
+        ArgumentNullException.ThrowIfNull(argument: source);
+        ArgumentNullException.ThrowIfNull(argument: selector);
+        var items = source.ToArray();
+        if (items.Length == 0)
+        {
+            return [];
+        }
+
+        var factory = CaptureAttributeTypeFactory(hasTypes: true);
+        return factory is null
+            ? items.Select(selector: item => selector(arg1: this, arg2: item))
+            : Typewriter.CodeModel.DeferredItemList<TItem>.Create(source: items, selector: item => selector(arg1: factory, arg2: item));
     }
 
     private Typewriter.CodeModel.Item? CreateParentTypeItem(string fullName)
