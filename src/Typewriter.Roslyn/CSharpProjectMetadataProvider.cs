@@ -154,6 +154,7 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
         }
 
         ProjectLoadResult loadedProject;
+        var msbuildLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
         if (cacheLookup.Outcome == CacheLookupOutcome.RebuildFromSources)
         {
             loadedProject = cacheLookup.LoadedProject!;
@@ -176,6 +177,8 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
             loadedProject = await projectLoader.LoadAsync(project: project, cancellationToken: cancellationToken).ConfigureAwait(continueOnCapturedContext: false);
             MetadataCacheMetrics.RecordFullLoad();
         }
+
+        var msbuildLoadElapsed = msbuildLoadStopwatch.Elapsed;
 
         if (loadedProject.Diagnostics.Any(predicate: diagnostic => diagnostic.Severity == Typewriter.Abstractions.DiagnosticSeverity.Error))
         {
@@ -218,7 +221,9 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
             loadedProject: loadedProject,
             projectReferences: projectReferences,
             runFullDiagnostics: project.RunFullDiagnostics,
+            msbuildLoadElapsed: msbuildLoadElapsed,
             cancellationToken: cancellationToken).ConfigureAwait(continueOnCapturedContext: false);
+        var mergeStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var result = new ProjectMetadataBuildResult(
             Metadata: MergeProjectMetadata(
                 project: currentProject.Metadata,
@@ -229,6 +234,11 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
                 compilation: currentProject.Compilation,
                 referencedProjects: referencedProjects));
         AddCachedResult(cacheKey: metadataCacheKey, result: result, loadedProject: loadedProject, validatedVersion: validationVersion);
+        MetadataLoadTimings.Record(
+            projectPath: $"{projectPath} (merged with references)",
+            sourceFiles: result.Metadata.SourceFiles.Count,
+            types: result.Metadata.Types.Count,
+            stages: [("merge+cache", mergeStopwatch.Elapsed)]);
         return CacheResult(
             projectPath: projectPath,
             result: result,
@@ -242,9 +252,18 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
         ProjectLoadResult loadedProject,
         IReadOnlyList<MetadataReference> projectReferences,
         bool runFullDiagnostics,
+        TimeSpan msbuildLoadElapsed,
         CancellationToken cancellationToken)
 #pragma warning restore MA0051 // Method is too long
     {
+        var stageStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stages = new List<(string Stage, TimeSpan Elapsed)> { ("msbuild", msbuildLoadElapsed) };
+        void EndStage(string name)
+        {
+            stages.Add(item: (name, stageStopwatch.Elapsed));
+            stageStopwatch.Restart();
+        }
+
         var sourcePaths = loadedProject.SourceFiles.ToArray();
         var parseOptions = CSharpParseOptions.Default
             .WithLanguageVersion(version: LanguageVersion.Preview)
@@ -284,6 +303,7 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
                 MetadataCacheMetrics.RecordParsedSourceFile();
                 _ = SourceParseCounts.AddOrUpdate(key: cacheKey, addValue: 1, updateValueFactory: static (_, count) => count + 1);
             }).ConfigureAwait(continueOnCapturedContext: false);
+        EndStage(name: "parse");
 
         var syntaxTrees = new List<SyntaxTree>(capacity: sourcePaths.Length + 1);
         syntaxTrees.AddRange(collection: parsedTrees);
@@ -296,6 +316,7 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
             options: new CSharpCompilationOptions(
                 outputKind: OutputKind.DynamicallyLinkedLibrary,
                 nullableContextOptions: NullableContextOptions.Enable));
+        EndStage(name: "compilation+refs");
 
         compilation = RunSourceGenerators(
             compilation: compilation,
@@ -303,6 +324,7 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
             parseOptions: parseOptions,
             cancellationToken: cancellationToken,
             diagnostics: out var generatorDiagnostics);
+        EndStage(name: "sourcegen");
         var diagnostics = GetCompilationDiagnostics(
                 compilation: compilation,
                 generatorDiagnostics: generatorDiagnostics,
@@ -311,8 +333,10 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
             .Where(predicate: diagnostic => diagnostic.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)
             .Select(selector: ToGenerationDiagnostic)
             .ToArray();
+        EndStage(name: "compiler-diagnostics");
 
         var sourceSymbols = GetSourceSymbols(compilation: compilation, syntaxTrees: syntaxTrees, cancellationToken: cancellationToken);
+        EndStage(name: "find-symbols");
         var symbolMetadata = sourceSymbols.Types
             .Select(
                 selector: symbol => new
@@ -333,6 +357,7 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
                 })
             .Where(predicate: item => item.HasMetadata)
             .ToArray();
+        EndStage(name: "extract-types");
 
         var typesByFile = symbolMetadata
             .SelectMany(
@@ -395,6 +420,8 @@ public sealed class CSharpProjectMetadataProvider : IProjectMetadataProvider
                 .OrderBy(keySelector: type => type.FullName, comparer: StringComparer.Ordinal)
                 .ToArray(),
         };
+        EndStage(name: "assemble");
+        MetadataLoadTimings.Record(projectPath: projectPath, sourceFiles: sourcePaths.Length, types: symbolMetadata.Length, stages: stages);
 
         return new ProjectMetadataBuildResult(
             Metadata: metadata,
